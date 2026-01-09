@@ -1,0 +1,6 @@
+.env
+gtfs_data/
+rawdata_TC_backup/
+*.csv
+__pycache__/
+*.db

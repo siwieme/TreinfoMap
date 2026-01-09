@@ -1,0 +1,21 @@
+{
+    "name": "TREINFO | Journey Logger",
+    "short_name": "B Tracer",
+    "description": "Log your train journeys and compositions on the Infrabel network.",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#ffffff",
+    "theme_color": "#003399",
+    "icons": [
+        {
+            "src": "/static/img/logo_premium.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "/static/img/logo_premium.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
+}

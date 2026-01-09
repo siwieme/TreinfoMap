@@ -1,0 +1,1407 @@
+<!DOCTYPE html>
+<html lang="nl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TREINFO | Journey Logger</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#FAF9F6">
+    <script>
+        window.TREINFO_TRANS = {{ translations_json | safe }};
+        window.CURRENT_LANG = "{{ current_lang }}";
+    </script>
+    <!-- Google Fonts: Outfit -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <style>
+        /* Timeline Styles */
+        #route-details-list {
+            overflow-x: auto;
+            white-space: nowrap;
+            padding: 15px 0;
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+            display: none;
+            /* Toggled by JS */
+        }
+
+        #route-details-list::-webkit-scrollbar {
+            display: none;
+        }
+
+        .timeline-flex {
+            display: flex;
+            align-items: flex-start;
+            min-width: 100%;
+            padding: 0 20px;
+        }
+
+        .timeline-item {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-width: 160px;
+            /* Wider spacing */
+            flex-shrink: 0;
+        }
+
+        @media (max-width: 576px) {
+            .timeline-item {
+                min-width: 130px;
+                /* Condensed for mobile but still spacious */
+            }
+        }
+
+        .timeline-line {
+            position: absolute;
+            top: 42px;
+            /* Aligned with marker center */
+            left: 0;
+            right: 0;
+            height: 3px;
+            background-color: #e9ecef;
+            z-index: 0;
+        }
+
+        .timeline-item:first-child .timeline-line {
+            left: 50%;
+        }
+
+        .timeline-item:last-child .timeline-line {
+            right: 50%;
+        }
+
+        .timeline-marker {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #fff;
+            border: 2px solid #6c757d;
+            z-index: 1;
+            margin-top: 0;
+            /* Natural flow */
+        }
+
+        .timeline-item.doorrit .timeline-marker {
+            visibility: hidden;
+        }
+
+        .station-name {
+            height: 30px;
+            margin-bottom: 0;
+            font-size: 0.75rem;
+            /* Small font */
+            color: #6c757d;
+            text-align: center;
+            width: 100%;
+            white-space: normal;
+            line-height: 1.1;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+        }
+
+        .station-time {
+            margin-top: 0;
+            font-family: monospace;
+            font-size: 0.7rem;
+            /* Small font */
+            color: #6c757d;
+        }
+
+        /* Active Segment Styling */
+        .timeline-item.active-segment .station-name {
+            color: #000;
+            font-weight: bold;
+        }
+
+        .timeline-item.active-segment .timeline-marker {
+            border-color: #003399;
+            /* NMBS Blue */
+            background-color: #fff;
+        }
+
+        .timeline-item.line-active .timeline-line {
+            background-color: #003399;
+        }
+    </style>
+</head>
+
+<body data-ui-mode="modern" data-bs-theme="light">
+
+    <!-- Wrapped Detail Modal -->
+    <div id="wrapped-detail-overlay"
+        style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); backdrop-filter: blur(15px); z-index:11000; align-items:center; justify-content:center; color:white;">
+        <div class="wrapped-detail-container p-4"
+            style="width: 90%; max-width: 500px; background: rgba(255,255,255,0.1); border-radius: 1.5rem; border: 1px solid rgba(255,255,255,0.2);">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2 id="detail-title" class="fw-bold m-0 h4">Ranking</h2>
+                <button onclick="closeRankingDetail()" class="bg-transparent border-0 text-white fs-3">&times;</button>
+            </div>
+            <div id="detail-list" class="mt-3">
+                <!-- Ranking items injected here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Wrapped Snapshot Overlay -->
+    <div id="wrapped-snapshot-overlay" onclick="closeSnapshotView()">
+        <div id="snapshot-modal-content" onclick="event.stopPropagation()">
+            <!-- Snapshot card injected here -->
+        </div>
+        <button class="btn btn-light rounded-pill px-4 mt-4" onclick="closeSnapshotView()">Close</button>
+    </div>
+
+    <!-- Wrapped Interactive Overlay -->
+    <div id="wrapped-overlay" onclick="toggleWrappedPause()">
+        <div class="wrapped-progress-container" id="wrapped-progress-target"></div>
+        <div class="wrapped-controls">
+            <button class="wrapped-btn" onclick="event.stopPropagation(); toggleWrappedPause()" id="wrapped-pause-btn">
+                <i class="bi bi-pause-fill"></i>
+            </button>
+            <button class="wrapped-btn" onclick="event.stopPropagation(); closeWrapped()">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+        <div id="wrapped-slide-target" class="wrapped-slide"></div>
+    </div>
+
+    <!-- Top Navigation (NMBS Style) -->
+    <nav class="navbar navbar-expand-lg">
+        <div class="container-fluid px-2 px-md-4">
+            <a href="#" class="nav-brand" onclick="resetMap(event)">
+                <img src="/static/img/logo_premium.png" alt="Logo" height="32" class="d-inline-block align-text-top">
+                <span>TREINFO</span>
+            </a>
+
+            <button class="navbar-toggler border-0 shadow-none" type="button" data-bs-toggle="collapse"
+                data-bs-target="#navbarContent">
+                <i class="bi bi-list fs-2 text-nmbs-blue"></i>
+            </button>
+
+            <div class="collapse navbar-collapse" id="navbarContent">
+                <div class="navbar-nav ms-auto gap-lg-3 align-items-lg-center">
+                    <div class="nav-item dropdown">
+                        <button class="nav-link bg-transparent border-0 dropdown-toggle" type="button"
+                            data-bs-toggle="dropdown" title="{{ t('nav_lang') }}">
+                            <i class="bi bi-translate"></i> <span>{{ t('nav_lang') }}</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end shadow-sm border-light">
+                            <li><a class="dropdown-item" href="#" onclick="setLanguage('nl')">Nederlands</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="setLanguage('fr')">Français</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="setLanguage('en')">English</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="setLanguage('de')">Deutsch</a></li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Map -->
+    <div id="map"></div>
+
+    <!-- Trips View (Data Table) -->
+    <div id="trips-view">
+
+        <!-- Wrapped Summary Section -->
+        <div id="wrapped-section"
+            style="display:none; background: linear-gradient(135deg, #003399 0%, #0055BB 100%); border-radius: 1.5rem; color: white; margin-bottom: 2.5rem; padding: 2.5rem; position: relative; overflow: hidden;">
+            <div class="row align-items-center mb-4">
+                <div class="col-md-9">
+                    <h1 class="display-5 fw-bold mb-2">{{ t('wrapped_title') }}</h1>
+                    <p class="fs-5 opacity-75 mb-0" id="summary-subtitle">{{ t('wrapped_loading') }}</p>
+
+                    <div class="wrapped-summary-controls mt-4">
+                        <select id="wrapped-filter-year" class="form-select w-auto glass text-white border-0 me-2"
+                            style="background-color: rgba(255,255,255,0.1) !important;" onchange="loadWrappedSummary()">
+                            <option value="2026" selected>2026</option>
+                            <option value="2025">2025</option>
+                            <option value="2024">2024</option>
+                        </select>
+                        <select id="wrapped-filter-month" class="form-select w-auto glass text-white border-0 me-2"
+                            style="background-color: rgba(255,255,255,0.1) !important;" onchange="loadWrappedSummary()">
+                            <option value="all" selected>Full Year</option>
+                            <option value="1">January</option>
+                            <option value="2">February</option>
+                            <option value="3">March</option>
+                            <option value="4">April</option>
+                            <option value="5">May</option>
+                            <option value="6">June</option>
+                            <option value="7">July</option>
+                            <option value="8">August</option>
+                            <option value="9">September</option>
+                            <option value="10">October</option>
+                            <option value="11">November</option>
+                            <option value="12">December</option>
+                        </select>
+                        <button class="btn-wrapped-control" onclick="startWrapped()"><i class="bi bi-play-fill"></i>
+                            Play</button>
+                        <button class="btn-wrapped-control outline" onclick="copyWrappedUrl()"><i
+                                class="bi bi-share-fill"></i> Share</button>
+                        <button class="btn-wrapped-control blue outline" onclick="showSnapshotView()"><i
+                                class="bi bi-camera-fill"></i> Snapshot</button>
+                    </div>
+                </div>
+                <div class="col-md-3 text-end d-none d-md-block">
+                    <i class="bi bi-stars" style="font-size: 6rem; opacity: 0.2;"></i>
+                </div>
+            </div>
+
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <div class="wrapped-summary-card">
+                        <div class="wrapped-summary-label">{{ t('stat_total_spots') }}</div>
+                        <div class="wrapped-summary-value large" id="sum-total-spots">-</div>
+                        <div class="wrapped-summary-subtitle"><i class="bi bi-train-front"></i> <span
+                                id="sum-train-count">-</span> <i class="bi bi-bus-front"></i> <span
+                                id="sum-bus-count">0</span></div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="wrapped-summary-card" onclick="showRankingDetail('stations')" style="cursor: pointer;">
+                        <div class="wrapped-summary-label">{{ t('stat_top_loc') }}</div>
+                        <div class="wrapped-summary-value" id="sum-top-loc">-</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="wrapped-summary-card" onclick="showRankingDetail('materials')" style="cursor: pointer;">
+                        <div class="wrapped-summary-label">{{ t('stat_top_mat') }}</div>
+                        <div class="wrapped-summary-value" id="sum-top-mat">-</div>
+                    </div>
+                </div>
+
+                <div class="col-md-4">
+                    <div class="wrapped-summary-card" onclick="showRankingDetail('units')" style="cursor: pointer;">
+                        <div class="wrapped-summary-label">{{ t('stat_top_unit') }}</div>
+                        <div class="wrapped-summary-value" id="sum-top-unit">-</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="wrapped-summary-card">
+                        <div class="wrapped-summary-label">{{ t('stat_unique_units') }}</div>
+                        <div class="wrapped-summary-value" id="sum-unique-units">-</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="wrapped-summary-card" onclick="showRankingDetail('days')" style="cursor: pointer;">
+                        <div class="wrapped-summary-label">{{ t('stat_fav_day') }}</div>
+                        <div class="wrapped-summary-value" id="sum-fav-day">-</div>
+                    </div>
+                </div>
+
+                <div class="col-md-6">
+                    <div class="wrapped-summary-card" onclick="showRankingDetail('time_blocks')"
+                        style="cursor: pointer;">
+                        <div class="wrapped-summary-label">{{ t('stat_fav_time') }}</div>
+                        <div class="wrapped-summary-value" id="sum-fav-time">-</div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="wrapped-summary-card" onclick="showRankingDetail('segments')" style="cursor: pointer;">
+                        <div class="wrapped-summary-label">{{ t('stat_top_seg') }}</div>
+                        <div class="wrapped-summary-value" id="sum-top-seg">-</div>
+                    </div>
+                </div>
+
+                <div class="col-12">
+                    <div class="wrapped-summary-card" onclick="showRankingDetail('routes')"
+                        style="cursor: pointer; min-height: 100px;">
+                        <div class="wrapped-summary-label">{{ t('stat_top_route') }}</div>
+                        <div class="wrapped-summary-value" id="sum-top-route">-</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2 class="h4 fw-bold">{{ t('trips_title') }}</h2>
+            <button class="btn-premium" onclick="toggleView('map')">{{ t('new_trip') }}</button>
+        </div>
+        <div class="table-responsive">
+            <table class="trips-table">
+                <thead>
+                    <tr>
+                        <th>{{ t('table_train') }}</th>
+                        <th>{{ t('table_full_route') }}</th>
+                        <th>{{ t('table_dep_station') }}</th>
+                        <th>{{ t('table_your_route') }}</th>
+                        <th>{{ t('table_dest') }}</th>
+                        <th>{{ t('table_date') }}</th>
+                        <th>{{ t('table_dep_time') }}</th>
+                        <th>{{ t('table_arr_time') }}</th>
+                        <th>{{ t('table_km') }}</th>
+                        <th>{{ t('table_unit') }}</th>
+                        <th>{{ t('table_action') }}</th>
+                    </tr>
+                </thead>
+                <tbody id="trips-table-body">
+                    <!-- Data here -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Sidebar (Command Panel - only on Map) -->
+    <div class="command-panel card border-0 shadow-lg p-3" id="main-panel"
+        style="transition: transform 0.3s ease-in-out; overflow: visible;">
+        <button onclick="toggleSearch()" id="search-toggle-btn"
+            class="btn btn-light shadow-sm position-absolute start-100 top-0 mt-3 ms-n2 rounded-end d-flex align-items-center justify-content-center"
+            style="width:30px; height:40px; border:1px solid rgba(0,0,0,0.1); border-left:0;">
+            <i class="bi bi-chevron-left"></i>
+        </button>
+        <div class="search-tabs">
+            <button class="tab-btn active" onclick="switchSearchTab('train', this)">{{ t('tab_train') }}</button>
+            <button class="tab-btn" onclick="switchSearchTab('plan', this)">{{ t('tab_station') }}</button>
+            <button class="tab-btn" onclick="switchSearchTab('board', this)">{{ t('view_board') }}</button>
+        </div>
+
+        <div id="search-train-zone" class="search-zone">
+            <div class="search-container mb-2">
+                <i class="bi bi-search text-secondary"></i>
+                <input type="text" id="input-train" class="search-input" placeholder="{{ t('search_placeholder') }}"
+                    onkeyup="handleSearch(event)">
+            </div>
+            <div class="search-container">
+                <i class="bi bi-calendar3 text-secondary"></i>
+                <input type="date" id="input-train-date" class="search-input" value="{{ today }}">
+            </div>
+        </div>
+
+        <div id="search-plan-zone" class="search-zone" style="display:none;">
+            <div class="search-container mb-2">
+                <i class="bi bi-geo-alt text-secondary"></i>
+                <input type="text" id="input-from" class="search-input" placeholder="{{ t('sheet_start_station') }}...">
+            </div>
+            <div class="search-container mb-2">
+                <i class="bi bi-geo text-secondary"></i>
+                <input type="text" id="input-to" class="search-input" placeholder="{{ t('sheet_end_station') }}...">
+            </div>
+            <div class="d-flex gap-2">
+                <div class="search-container flex-grow-1">
+                    <i class="bi bi-calendar3 text-secondary"></i>
+                    <input type="date" id="input-plan-date" class="search-input" value="{{ today }}">
+                </div>
+                <div class="search-container" style="width: 100px;">
+                    <select id="input-plan-hour" class="search-input bg-transparent border-0">
+                        <option value="">Hour</option>
+                        {% for h in range(24) %}
+                        <option value="{{ '%02d' % h }}">{{ '%02d' % h }}:00</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <button class="btn-premium w-100 mt-3" onclick="planRoute()">{{ t('find_trains') }}</button>
+        </div>
+
+        <div id="search-board-zone" class="search-zone" style="display:none;">
+            <div class="search-container mb-2">
+                <i class="bi bi-building text-secondary"></i>
+                <input type="text" id="input-station" class="search-input" placeholder="{{ t('tab_station') }}...">
+            </div>
+            <div class="d-flex gap-2">
+                <div class="search-container flex-grow-1">
+                    <i class="bi bi-calendar3 text-secondary"></i>
+                    <input type="date" id="input-board-date" class="search-input" value="{{ today }}">
+                </div>
+                <div class="search-container" style="width: 100px;">
+                    <select id="input-board-hour" class="search-input bg-transparent border-0">
+                        <option value="">Hour</option>
+                        {% for h in range(24) %}
+                        <option value="{{ '%02d' % h }}">{{ '%02d' % h }}:00</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <button class="btn-premium w-100 mt-3" onclick="loadBoard()">{{ t('view_board') }}</button>
+        </div>
+
+        <div id="results-target" class="mt-3">
+            <div class="text-center text-secondary p-5">
+                <i class="bi bi-search" style="font-size: 2rem;"></i>
+                <p class="small mt-2">{{ t('search_results_here') }}</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Sheet Composition (Read Only) -->
+    <div class="bottom-sheet" id="composition-sheet">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <div>
+                <h3 class="h5 fw-bold m-0" id="sheet-train-title">{{ t('sheet_train_details') }}</h3>
+                <p class="small text-secondary m-0" id="sheet-train-route">-</p>
+            </div>
+            <div class="d-flex gap-2">
+                <button onclick="toggleSheetMin()" class="bg-transparent border-0 text-secondary h4 mb-0"><i
+                        class="bi bi-dash"></i></button>
+                <button onclick="closeSheet()" class="bg-transparent border-0 text-secondary h4 mb-0">&times;</button>
+            </div>
+        </div>
+
+        <!-- Route List Only -->
+        <div id="route-details-list" style="max-height: 50vh; overflow-y: auto;"></div>
+    </div>
+
+    <!-- Coverage Filter Modal -->
+    <div id="coverage-filter-overlay"
+        style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+        <div class="premium-card p-5" style="background:white; width:450px; border-radius:1rem; position: relative;">
+            <button onclick="closeCoverageFilter()" class="bg-transparent border-0 text-secondary fs-3"
+                style="position: absolute; top: 10px; right: 20px;">&times;</button>
+            <h3 class="fw-bold mb-4" id="coverage-filter-title">{{ t('filter_coverage_title') }}</h3>
+
+            <div id="filter-monthly-zone" style="display: none;">
+                <p class="small text-secondary mb-3">{{ t('filter_coverage_monthly') }}</p>
+                <div class="row g-2 mb-4">
+                    <div class="col-6">
+                        <select id="coverage-month" class="form-select month-select"></select>
+                    </div>
+                    <div class="col-6">
+                        <select id="coverage-year" class="form-select year-select"></select>
+                    </div>
+                </div>
+            </div>
+
+            <div id="filter-range-zone" style="display: none;">
+                <p class="small text-secondary mb-3">{{ t('filter_coverage_range') }}</p>
+                <div class="row g-2 mb-2">
+                    <div class="col-12"><label class="small text-muted mb-1">{{ t('filter_from') }}</label></div>
+                    <div class="col-6">
+                        <select id="coverage-start-month" class="form-select month-select"></select>
+                    </div>
+                    <div class="col-6">
+                        <select id="coverage-start-year" class="form-select year-select"></select>
+                    </div>
+                </div>
+                <div class="row g-2 mb-4">
+                    <div class="col-12"><label class="small text-muted mb-1">{{ t('filter_to') }}</label></div>
+                    <div class="col-6">
+                        <select id="coverage-end-month" class="form-select month-select"></select>
+                    </div>
+                    <div class="col-6">
+                        <select id="coverage-end-year" class="form-select year-select"></select>
+                    </div>
+                </div>
+            </div>
+
+            <button onclick="applyCoverageFilter()" class="btn-premium w-100 py-3">{{ t('filter_apply') }}</button>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        let map = L.map('map', { zoomControl: false }).setView([50.8503, 4.3517], 9);
+        let authMode = 'login';
+        const isLoggedIn = "{{ 'true' if session.get('user_id') else 'false' }}" === "true";
+
+        // Check for reset token on load
+        window.addEventListener('load', () => {
+            // Restore state
+            const savedState = localStorage.getItem('treinfo_search_state');
+            if (savedState) {
+                const state = JSON.parse(savedState);
+                if (state.tab) switchSearchTab(state.tab, document.querySelector(`[onclick*="switchSearchTab('${state.tab}')"]`));
+                if (state.train) document.getElementById('input-train').value = state.train;
+                if (state.from) document.getElementById('input-from').value = state.from;
+                if (state.to) document.getElementById('input-to').value = state.to;
+                if (state.station) document.getElementById('input-station').value = state.station;
+
+                // Trigger search if something was there
+                if (state.train && state.train.length >= 2) handleSearch({ target: { value: state.train } });
+
+                localStorage.removeItem('treinfo_search_state');
+            }
+
+            const params = new URLSearchParams(window.location.search);
+            const token = params.get('token');
+            if (token) {
+                authMode = 'reset';
+                document.getElementById('auth-overlay').style.display = 'flex';
+                document.getElementById('auth-title').innerText = '{{ t("auth_reset_pwd") }}';
+                document.getElementById('auth-normal-fields').style.display = 'none';
+                document.getElementById('auth-forgot-fields').style.display = 'none';
+                document.getElementById('auth-reset-fields').style.display = 'block';
+                document.getElementById('reset-token').value = token;
+            }
+
+            const wrappedToken = params.get('wrapped');
+            if (wrappedToken) {
+                loadWrappedSummary(wrappedToken);
+            }
+        });
+        let editingJourneyId = null; // Track if we are editing
+        let activeTrace = null;
+        let coverageLayer = null;
+        let selectedTrain = null;
+        let selectedTrainNumber = null;
+        let selectedDestination = null;
+        let selectedUnit = null;
+        let selectedUnits = [];
+        let selectedStartStop = null;
+        let selectedEndStop = null;
+        let currentTab = 'train';
+        let isCoverageVisible = false;
+        let monthlyCoverageLayer = null;
+
+        // Light Theme Tiles
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap'
+        }).addTo(map);
+
+        async function toggleCoverage() {
+            isCoverageVisible = !isCoverageVisible;
+            const link = document.getElementById('link-coverage');
+
+            if (isCoverageVisible) {
+                link.classList.add('active');
+                if (!coverageLayer) {
+                    const res = await fetch('/api/coverage');
+                    const data = await res.json();
+                    coverageLayer = L.geoJSON(data, {
+                        style: { color: '#003399', weight: 3, opacity: 0.6 }
+                    });
+                }
+                coverageLayer.addTo(map);
+                map.fitBounds(coverageLayer.getBounds(), { padding: [50, 50] });
+            } else {
+                link.classList.remove('active');
+                if (coverageLayer) map.removeLayer(coverageLayer);
+            }
+        }
+
+        async function resetMap(e) {
+            if (e) e.preventDefault();
+            toggleView('map');
+
+            // Clear traces
+            if (activeTrace) {
+                map.removeLayer(activeTrace);
+                activeTrace = null;
+            }
+            if (coverageLayer) {
+                map.removeLayer(coverageLayer);
+                coverageLayer = null;
+                document.getElementById('link-coverage').classList.remove('active');
+                isCoverageVisible = false;
+            }
+            if (monthlyCoverageLayer) {
+                map.removeLayer(monthlyCoverageLayer);
+                monthlyCoverageLayer = null;
+            }
+
+            // Reset view to Belgium default
+            map.setView([50.8503, 4.3517], 8);
+
+            // Also close any open sheets
+            closeSheet();
+        }
+
+        async function toggleMonthlyCoverage() {
+            if (monthlyCoverageLayer) {
+                map.removeLayer(monthlyCoverageLayer);
+                monthlyCoverageLayer = null;
+                return;
+            }
+            openCoverageFilter('monthly');
+        }
+
+        async function toggleGlobalCoverage() {
+            if (coverageLayer) {
+                map.removeLayer(coverageLayer);
+                coverageLayer = null;
+                document.getElementById('link-coverage').classList.remove('active');
+                isCoverageVisible = false;
+                return;
+            }
+            openCoverageFilter('range');
+        }
+
+        let coverageFilterType = 'monthly';
+        function openCoverageFilter(type) {
+            coverageFilterType = type;
+            document.getElementById('coverage-filter-overlay').style.display = 'flex';
+            document.getElementById('filter-monthly-zone').style.display = type === 'monthly' ? 'block' : 'none';
+            document.getElementById('filter-range-zone').style.display = type === 'range' ? 'block' : 'none';
+
+            // Populate selects if empty
+            const monthSelects = document.querySelectorAll('.month-select');
+            const yearSelects = document.querySelectorAll('.year-select');
+            const months = ['Januari', 'Februari', 'Maart', 'April', 'Mei', 'Juni', 'Juli', 'Augustus', 'September', 'Oktober', 'November', 'December'];
+            const now = new Date();
+
+            monthSelects.forEach(s => {
+                if (s.options.length === 0) {
+                    months.forEach((m, i) => {
+                        const opt = document.createElement('option');
+                        opt.value = i + 1; opt.innerText = m;
+                        if (i + 1 === now.getMonth() + 1) opt.selected = true;
+                        s.appendChild(opt);
+                    });
+                }
+            });
+
+            yearSelects.forEach(s => {
+                if (s.options.length === 0) {
+                    for (let y = 2024; y <= 2026; y++) {
+                        const opt = document.createElement('option');
+                        opt.value = y; opt.innerText = y;
+                        if (y === now.getFullYear()) opt.selected = true;
+                        s.appendChild(opt);
+                    }
+                }
+            });
+        }
+
+        function closeCoverageFilter() {
+            document.getElementById('coverage-filter-overlay').style.display = 'none';
+        }
+
+        async function applyCoverageFilter() {
+            closeCoverageFilter();
+            toggleView('map');
+
+            let url = '';
+            let layerVar = null;
+
+            if (coverageFilterType === 'monthly') {
+                const month = document.getElementById('coverage-month').value;
+                const year = document.getElementById('coverage-year').value;
+                url = `/api/monthly_coverage?month=${month}&year=${year}`;
+            } else {
+                const sm = document.getElementById('coverage-start-month').value;
+                const sy = document.getElementById('coverage-start-year').value;
+                const em = document.getElementById('coverage-end-month').value;
+                const ey = document.getElementById('coverage-end-year').value;
+                url = `/api/range_coverage?start_month=${sm}&start_year=${sy}&end_month=${em}&end_year=${ey}`;
+            }
+
+            const res = await fetch(url);
+            const data = await res.json();
+
+            if (coverageFilterType === 'monthly') {
+                if (monthlyCoverageLayer) map.removeLayer(monthlyCoverageLayer);
+                monthlyCoverageLayer = L.geoJSON(data, {
+                    style: { color: '#00AA00', weight: 4, opacity: 0.7 }
+                }).addTo(map);
+                if (data.features && data.features.length > 0) {
+                    map.fitBounds(monthlyCoverageLayer.getBounds(), { padding: [50, 50] });
+                } else {
+                    alert("Geen data gevonden voor deze periode.");
+                }
+            } else {
+                if (coverageLayer) map.removeLayer(coverageLayer);
+                coverageLayer = L.geoJSON(data, {
+                    style: { color: '#003399', weight: 4, opacity: 0.7 }
+                }).addTo(map);
+                document.getElementById('link-coverage').classList.add('active');
+                isCoverageVisible = true;
+                if (data.features && data.features.length > 0) {
+                    map.fitBounds(coverageLayer.getBounds(), { padding: [50, 50] });
+                } else {
+                    alert("Geen data gevonden voor deze periode.");
+                }
+            }
+        }
+
+        function toggleView(view) {
+            closeSheet();
+            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+            document.body.classList.toggle('view-trips', view === 'trips');
+
+            if (view === 'trips') {
+                document.getElementById('map').style.display = 'none';
+                document.getElementById('trips-view').style.display = 'block';
+                document.getElementById('main-panel').style.display = 'none';
+                document.getElementById('link-trips').classList.add('active');
+                loadHistory();
+                loadWrappedSummary();
+            } else {
+                document.getElementById('map').style.display = 'block';
+                document.getElementById('trips-view').style.display = 'none';
+                document.getElementById('main-panel').style.display = 'block';
+                document.getElementById('link-map').classList.add('active');
+            }
+        }
+
+        function switchSearchTab(tab, el) {
+            currentTab = tab;
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            el.classList.add('active');
+            document.querySelectorAll('.search-zone').forEach(z => z.style.display = 'none');
+            document.getElementById(`search-${tab}-zone`).style.display = 'block';
+        }
+
+        function handleResults(data) {
+            const target = document.getElementById('results-target');
+            target.innerHTML = '';
+            if (!data || data.length === 0) {
+                target.innerHTML = `<div class="text-center text-secondary p-5"><p class="small">${'{{ t("search_no_results") }}'}</p></div>`;
+                return;
+            }
+            data.forEach(t => {
+                const card = document.createElement('div');
+                card.className = 'train-card';
+                // Use route_name as type if available, otherwise just 'Trein'
+                // Heuristic: If route_name is short (e.g. "IC", "S51"), use it.
+                // If route_name is e.g. "Oostende - Eupen", maybe try to extract type?
+                // Usually route_name in DB is whatever was imported.
+                const routeName = t.route_name || '';
+                // Heuristic: If route_name contains " - ", then it's a route, NOT a type.
+                // If route_name is plain (e.g. "S53"), it's a type.
+                // If route_name is missing, default to "Trein".
+                let type = 'Trein';
+                if (routeName && !routeName.includes(' - ') && !routeName.includes(' -- ')) {
+                    type = routeName;
+                }
+                const dateVal = t.date;
+
+                card.onclick = () => {
+                    traceTrain(t.id, t.train_number, t.destination, null, null, 'read', [], type, dateVal);
+                    if (window.innerWidth < 992) toggleSearch();
+                };
+                card.innerHTML = `
+                    <div class="d-flex justify-content-between align-items-center">
+                        <span class="fw-bold" style="color: var(--nmbs-blue);">${t.train_number}</span>
+                        <span class="small text-secondary">${t.departure_time ? t.departure_time.substring(0, 5) : ''}</span>
+                    </div>
+                    <div class="small text-secondary mt-1">${t.destination}</div>
+                `;
+                target.appendChild(card);
+            });
+        }
+
+        async function handleSearch(e) {
+            const q = e.target.value;
+            const date = document.getElementById('input-train-date').value;
+            if (q.length < 2) return;
+            const res = await fetch(`/api/search_trains?q=${q}&date=${date}`);
+            const data = await res.json();
+            handleResults(data);
+        }
+
+        async function planRoute() {
+            const f = document.getElementById('input-from').value;
+            const t = document.getElementById('input-to').value;
+            const date = document.getElementById('input-plan-date').value;
+            let hour = document.getElementById('input-plan-hour').value;
+
+            if (!hour) {
+                const now = new Date();
+                hour = String(now.getHours()).padStart(2, '0');
+            }
+
+            const res = await fetch(`/api/plan_journey?from=${f}&to=${t}&date=${date}&hour=${hour}`);
+            const data = await res.json();
+            handleResults(data);
+        }
+
+        async function loadBoard() {
+            const s = document.getElementById('input-station').value;
+            const date = document.getElementById('input-board-date').value;
+            let hour = document.getElementById('input-board-hour').value;
+
+            if (!hour) {
+                const now = new Date();
+                hour = String(now.getHours()).padStart(2, '0');
+            }
+
+            const res = await fetch(`/api/station_board?station=${s}&date=${date}&hour=${hour}`);
+            handleResults(await res.json());
+        }
+
+        const JS_TRANSLATIONS = {
+            'nl': {
+                'shared_by': 'Gedeeld door {user}',
+                'wrapped_intro': 'Jouw spoorwegjaar in kaart',
+                'top_stations': 'Populairste Stations',
+                'top_materials': 'Favoriet Materieel',
+                'top_units': 'Meest Gereisde Unit',
+                'top_routes': 'Jouw Routes',
+                'top_segments': 'Top Segmenten',
+                'time_distribution': 'Tijdblokken',
+                'total_stats': 'Totale Statistieken',
+                'trips': 'ritten',
+                'snapshot_btn': 'Snapshot 📸',
+                'Night': 'Nacht',
+                'Early Morning': 'Vroege Ochtend',
+                'Morning': 'Ochtend',
+                'Noon': 'Middag',
+                'Afternoon': 'Namiddag',
+                'Evening': 'Avond',
+                'Late Evening': 'Laatavond',
+                'Monday': 'Maandag',
+                'Tuesday': 'Dinsdag',
+                'Wednesday': 'Woensdag',
+                'Thursday': 'Donderdag',
+                'Friday': 'Vrijdag',
+                'Saturday': 'Zaterdag',
+                'Sunday': 'Zondag',
+                'top_text': 'Je reisde het vaakst via {station}!',
+                'stat_fav_day': 'Favoriete Reisdag'
+            },
+            'fr': {
+                'shared_by': 'Partagé par {user}',
+                'wrapped_intro': 'Votre année ferroviaire',
+                'top_stations': 'Gares Préférées',
+                'top_materials': 'Matériel Préféré',
+                'top_units': 'Unités les plus parcourues',
+                'top_routes': 'Trajets Préférés',
+                'top_segments': 'Segments Préférés',
+                'time_distribution': 'Répartition Horaire',
+                'total_stats': 'Statistiques Globales',
+                'trips': 'trajets',
+                'snapshot_btn': 'Capture 📸',
+                'Night': 'Nuit',
+                'Early Morning': 'Petit Matin',
+                'Morning': 'Matin',
+                'Noon': 'Midi',
+                'Afternoon': 'Après-midi',
+                'Evening': 'Soirée',
+                'Late Evening': 'Fin de Soirée',
+                'Monday': 'Lundi',
+                'Tuesday': 'Mardi',
+                'Wednesday': 'Mercredi',
+                'Thursday': 'Jeudi',
+                'Friday': 'Vendredi',
+                'Saturday': 'Samedi',
+                'Sunday': 'Dimanche',
+                'top_text': 'Vous avez voyagé le plus souvent via {station} !',
+                'stat_fav_day': 'Jour de Voyage Préféré'
+            },
+            'en': {
+                'shared_by': 'Shared by {user}',
+                'wrapped_intro': 'Your Railway Year',
+                'top_stations': 'Top Stations',
+                'top_materials': 'Top Materials',
+                'top_units': 'Most Traveled Units',
+                'top_routes': 'Top Routes',
+                'top_segments': 'Top Segments',
+                'time_distribution': 'Time Blocks',
+                'total_stats': 'Total Statistics',
+                'trips': 'trips',
+                'snapshot_btn': 'Snapshot 📸',
+                'Night': 'Night',
+                'Early Morning': 'Early Morning',
+                'Morning': 'Morning',
+                'Noon': 'Noon',
+                'Afternoon': 'Afternoon',
+                'Evening': 'Evening',
+                'Late Evening': 'Late Evening',
+                'Monday': 'Monday',
+                'Tuesday': 'Tuesday',
+                'Wednesday': 'Wednesday',
+                'Thursday': 'Thursday',
+                'Friday': 'Friday',
+                'Saturday': 'Saturday',
+                'Sunday': 'Sunday',
+                'top_text': 'You traveled most often through {station}!',
+                'stat_fav_day': 'Favorite Travel Day'
+            },
+            'de': {
+                'shared_by': 'Geteilt von {user}',
+                'wrapped_intro': 'Dein Bahnjahr',
+                'top_stations': 'Top Bahnhöfe',
+                'top_materials': 'Top Material',
+                'top_units': 'Meistgefahrene Einheiten',
+                'top_routes': 'Top Strecken',
+                'top_segments': 'Top Abschnitte',
+                'time_distribution': 'Zeitblöcke',
+                'total_stats': 'Gesamtstatistik',
+                'trips': 'Fahrten',
+                'snapshot_btn': 'Schnappschuss 📸',
+                'Night': 'Nacht',
+                'Early Morning': 'Früher Morgen',
+                'Morning': 'Morgen',
+                'Noon': 'Mittag',
+                'Afternoon': 'Nachmittag',
+                'Evening': 'Abend',
+                'Late Evening': 'Später Abend',
+                'Monday': 'Montag',
+                'Tuesday': 'Dienstag',
+                'Wednesday': 'Mittwoch',
+                'Thursday': 'Donnerstag',
+                'Friday': 'Freitag',
+                'Saturday': 'Samstag',
+                'Sunday': 'Sonntag',
+                'top_text': 'Du bist am häufigsten über {station} gereist!',
+                'stat_fav_day': 'Bevorzugter Reisetag'
+            }
+        };
+
+        function t_js(key, params = {}) {
+            const lang = '{{ current_lang }}';
+            let text = (JS_TRANSLATIONS[lang] || JS_TRANSLATIONS['nl'])[key] || key;
+            for (const [k, v] of Object.entries(params)) {
+                text = text.replace(`{${k} } `, v);
+            }
+            return text;
+        }
+
+        let wrappedSlides = [];
+        let currentSlideIdx = 0;
+        let slideTimer = null;
+        let slideStartTime = 0;
+        let remainingTime = 4000;
+        let isPaused = false;
+        let currentWrappedData = null;
+
+
+
+        // Mode: 'new' (default), 'read' (show only), 'edit' (update)
+        // Mode: 'new' (default), 'read' (show only), 'edit' (update)
+        async function traceTrain(trainId, number, route, startStop = null, endStop = null, mode = 'new', preSelectedUnits = [], type = 'Trein', date = '') {
+            try {
+                const res = await fetch(`/api/trace/${trainId}?start=${startStop || ''}&end=${endStop || ''}`);
+                const data = await res.json();
+
+                if (activeTrace) map.removeLayer(activeTrace);
+                if (data.type === 'FeatureCollection') {
+                    activeTrace = L.geoJSON(data, {
+                        style: function (f) {
+                            return {
+                                color: '#0060a9', // New logic color
+                                weight: 6,
+                                opacity: 0.9,
+                                dashArray: f.properties.fallback ? '10, 10' : null
+                            };
+                        }
+                    }).addTo(map);
+                    map.fitBounds(activeTrace.getBounds(), { padding: [100, 100] });
+                }
+            } catch (err) {
+                console.error("Error loading trace:", err);
+            }
+            // Always read mode now
+            selectedTrain = trainId;
+            selectedTrainNumber = number;
+            // selectedDestination was route, now we keep it? 
+            selectedDestination = route; // Destination passed for context
+            selectedStartStop = startStop;
+            selectedEndStop = endStop;
+            selectedUnits = [];
+
+            // UI Setup
+            const adjustDiv = document.getElementById('composition-adjust');
+            const listDiv = document.getElementById('route-details-list');
+            const sheetTitle = document.getElementById('sheet-train-title');
+
+            if (adjustDiv) adjustDiv.style.display = 'none';
+            if (listDiv) listDiv.style.display = 'block';
+
+            // Initial Title: Type Number (Route added later)
+            if (sheetTitle) sheetTitle.innerText = `${type} ${number}`;
+
+            // Subtitle: Date
+            // Format 2026-01-09 to 09/01/2026 if necessary? 
+            let dObj = new Date(date);
+            if (!isNaN(dObj.getTime())) {
+                let dStr = dObj.toLocaleDateString('en-GB'); // DD/MM/YYYY
+                document.getElementById('sheet-train-route').innerText = dStr;
+            } else {
+                document.getElementById('sheet-train-route').innerText = date || 'Today';
+            }
+
+            editingJourneyId = null;
+            const sheet = document.getElementById('composition-sheet');
+            if (sheet) {
+                sheet.classList.remove('sheet-large');
+                sheet.classList.add('open');
+            }
+            // document.getElementById('sheet-train-route').innerText = route; // Replaced by Date above
+            document.body.classList.add('no-scroll');
+
+            // Load stops
+            loadComposition(trainId, startStop, endStop, 'read', type, number);
+        }
+
+        async function showOnMap(trainId, start, end, number = null, destination = null) {
+            // Just verify map is visible (it should be default now)
+            // Call traceTrain which handles map logic
+            traceTrain(trainId, number || 'Search Result', destination || 'Train Path', start, end, 'read');
+        }
+
+        function closeSheet() {
+            document.getElementById('composition-sheet').classList.remove('open');
+            document.body.classList.remove('no-scroll');
+
+            // Fix: Clear trace when closing
+            if (activeTrace) {
+                map.removeLayer(activeTrace);
+                activeTrace = null;
+            }
+            // Reset edit state
+            editingJourneyId = null;
+            selectedTrain = null;
+        }
+
+        function openAuthModal() {
+            /* Disabled */
+        }
+
+        // updateTraceRange disabled as inputs are removed
+
+        async function loadComposition(trainId, startContext = null, endContext = null, mode = 'new', type = 'Trein', number = '') {
+            const res = await fetch(`/api/composition/${trainId}`);
+            const data = await res.json();
+            const target = document.getElementById('unit-target');
+            const startSelect = document.getElementById('select-start-stop');
+            const endSelect = document.getElementById('select-end-stop');
+            const listTarget = document.getElementById('route-details-list');
+
+            // Update Title with Route: "P 7013 Sint-Niklaas - Schaarbeek"
+            if (data.stops && data.stops.length > 0) {
+                const startName = data.stops[0].name;
+                const endName = data.stops[data.stops.length - 1].name;
+                document.getElementById('sheet-train-title').innerText = `${type} ${selectedTrainNumber || number} ${startName} - ${endName}`;
+            }
+
+            // Populate Horizontal Timeline (Always)
+            if (data.stops) {
+                if (data.stops) {
+                    let html = '<div class="timeline-flex">';
+                    let startIndex = -1;
+                    let endIndex = -1;
+
+                    // Determine indices
+                    data.stops.forEach((s, i) => {
+                        if (s.id === startContext) startIndex = i;
+                        if (s.id === endContext) endIndex = i;
+                    });
+
+                    // Update Route Header (Start -> End)
+                    if (data.stops.length > 0) {
+                        const startName = data.stops[0].name;
+                        const endName = data.stops[data.stops.length - 1].name;
+                        document.getElementById('sheet-train-route').innerText = `${startName} → ${endName} `;
+                    }
+
+                    data.stops.forEach((s, i) => {
+                        const inRange = (startIndex !== -1 && endIndex !== -1 && i >= startIndex && i <= endIndex);
+
+                        // Line Logic:
+                        const leftBlue = (startIndex !== -1 && i > startIndex && i <= endIndex);
+                        const rightBlue = (endIndex !== -1 && i >= startIndex && i < endIndex);
+
+                        const cLeft = leftBlue ? '#003399' : '#e9ecef';
+                        const cRight = rightBlue ? '#003399' : '#e9ecef';
+
+                        // Fix: First and Last visible items have truncated lines (CSS left:50% or right:50%).
+                        // This causes linear-gradient to squash if we don't normalize the hidden side.
+                        const finalCLeft = (i === 0) ? cRight : cLeft;
+                        const finalCRight = (i === data.stops.length - 1) ? cLeft : cRight;
+
+                        const isDoorrit = s.type === 'DOORRIT';
+                        let time = s.departure_time || s.arrival_time;
+                        if (i === data.stops.length - 1 && s.arrival_time) time = s.arrival_time;
+                        // Use s.time if available and others aren't?
+                        if (s.time) time = s.time;
+
+                        html += `
+                            <div class="timeline-item ${inRange ? 'active-segment' : ''} ${isDoorrit ? 'doorrit' : ''}">
+                                <div class="timeline-line" style="background: linear-gradient(to right, ${finalCLeft} 50%, ${finalCRight} 50%);"></div>
+                                <div class="station-name mb-2">${s.name}</div>
+                                <div class="timeline-marker"></div>
+                                <div class="station-time mt-2 small text-muted">${time ? time.substring(0, 5) : ''}</div>
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                    listTarget.innerHTML = html;
+
+                    // Scroll to start index
+                    setTimeout(() => {
+                        const activeEl = listTarget.querySelector('.active-segment');
+                        if (activeEl) {
+                            activeEl.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+                        }
+                    }, 100);
+                }
+            }
+
+            // Hide unit target as composition is disabled
+            target.innerHTML = '<p class="text-muted small text-center">{{ t("no_data") }}</p>';
+            target.innerHTML = '<div class="spinner-border spinner-border-sm text-primary"></div>';
+            updateSelectedUnitInfo();
+
+            startSelect.innerHTML = '';
+            endSelect.innerHTML = '';
+            if (data.stops) {
+                data.stops.forEach(s => {
+                    if (s.type === 'STOP') {
+                        const opt1 = document.createElement('option');
+                        opt1.value = s.id; opt1.innerText = `${s.time.substring(0, 5)} ${s.name} `;
+                        if (startContext === s.id) opt1.selected = true;
+                        startSelect.appendChild(opt1);
+
+                        const opt2 = document.createElement('option');
+                        opt2.value = s.id; opt2.innerText = `${s.time.substring(0, 5)} ${s.name} `;
+                        if (endContext === s.id) opt2.selected = true;
+                        endSelect.appendChild(opt2);
+                    }
+                });
+
+                if (!startContext && startSelect.options.length > 0) startSelect.selectedIndex = 0;
+                if (!endContext && endSelect.options.length > 0) endSelect.selectedIndex = endSelect.options.length - 1;
+
+                selectedStartStop = startSelect.value;
+                selectedEndStop = endSelect.value;
+            }
+
+
+            if (!data.units || data.units.length === 0) {
+                target.innerHTML = `< div class="small text-secondary" > ${'{{ t("no_data") }}'}.</div > `;
+            } else {
+                target.innerHTML = ''; // Clear spinner
+                data.units.forEach((u, i) => {
+                    const div = document.createElement('div');
+                    div.className = 'unit-card';
+
+                    // Auto-select locomotives if not in edit mode
+                    const tt = (u.traction_type || '').toUpperCase();
+                    const ut = (u.type || '').toUpperCase();
+                    const isLoco = tt === 'HLE' || tt === 'HLV' || ut.startsWith('HLE') || ut.startsWith('HLV');
+
+                    if (isLoco && selectedUnits.length < 4 && !selectedUnits.some(x => x.id === u.id)) {
+                        selectedUnits.push({ id: u.id, type: u.type, number: u.number });
+                        div.classList.add('active');
+                    }
+
+                    // Check if already selected (for edit mode)
+                    if (selectedUnits.some(x => x.id === u.id)) {
+                        div.classList.add('active');
+                    }
+
+                    // Use orientation from backend if available, fallback to legacy side logic
+                    let side = 'mid';
+                    if (u.orientation) {
+                        side = u.orientation.toLowerCase();
+                    } else {
+                        side = (i === 0) ? 'left' : (i === data.units.length - 1 ? 'right' : 'mid');
+                    }
+
+                    const imgUrl = getUnitImage(u.type, side, u.idx, u.parent_type, u.sub_type);
+
+                    // Relational Sizing: M5/M6/M7 (Double Deckers) are taller.
+                    const t = (u.type || '').toLowerCase();
+                    const p = (u.parent_type || '').toLowerCase();
+                    const isLarge = ['m5', 'm6', 'm7', 'am08', 'am86', 'desiro'].some(k => t.includes(k) || p.includes(k));
+                    const imgHeight = isLarge ? '54px' : '40px';
+
+                    div.innerHTML = `
+                    < div class="small fw-bold text-muted" > ${u.pos || u.position || ''}</div >
+                        <div class="unit-img-container" style="height: ${imgHeight}">
+                            <img src="${imgUrl}" style="height: ${imgHeight}">
+                        </div>
+                        <div class="small fw-bold">${u.type || ''}</div>
+                        <div class="text-secondary" style="font-size:0.7rem">${u.number || ''}</div>
+                `;
+                    div.onclick = () => {
+                        const idx = selectedUnits.findIndex(x => x.id === u.id);
+                        if (idx > -1) {
+                            selectedUnits.splice(idx, 1);
+                            div.classList.remove('active');
+                        } else if (selectedUnits.length < 4) {
+                            selectedUnits.push({ id: u.id, type: u.type, number: u.number });
+                            div.classList.add('active');
+                        }
+                        updateSelectedUnitInfo();
+                    };
+                    target.appendChild(div);
+                });
+                updateSelectedUnitInfo();
+            }
+            document.getElementById('composition-sheet').classList.add('open');
+        }
+
+        function updateSelectedUnitInfo() {
+            const info = document.getElementById('selected-unit-info');
+            if (!info) return;
+            if (selectedUnits.length === 0) {
+                info.innerText = '{{ t("sheet_unit_max") }}';
+            } else {
+                info.innerText = (getLocale() === 'nl' ? 'Geselecteerd: ' : (getLocale() === 'fr' ? 'Sélectionné: ' : 'Selected: ')) + selectedUnits.map(u => `${u.type} #${u.number} `).join(' | ');
+            }
+        }
+        function getLocale() { return document.documentElement.lang || 'nl'; }
+
+        function getUnitImage(type, side, idx = 0, parentType = null, subType = null) {
+            if (!type && !parentType) return '/static/img/unknown.png';
+
+            // Use parentType and subType for more accurate mapping
+            let baseType = (parentType || type).toLowerCase().replace(/[^a-z0-9]/g, '');
+            const sType = (subType || '').toLowerCase();
+            const assetSide = (side === 'left') ? 'left' : 'right';
+
+            // Special case for M-series or AM series with sub-types
+            const muTypes = ['ar41', 'am80', 'am96', 'am86', 'am08', 'am75', 'amflirt', 'amice'];
+            const isMU = muTypes.some(t => baseType.includes(t));
+
+            if (isMU) {
+                // If we have a specific sub-type like 'a' or 'b', use it. 
+                // Otherwise fall back to the old idx-based segment letters.
+                let seg = sType;
+                if (!seg) {
+                    const letters = ['a', 'b', 'c', 'd', 'e', 'f'];
+                    seg = (idx < letters.length) ? letters[idx] : 'a';
+                }
+
+                // Construct filename: e.g., am96_a_left.png or m6_auh_left.png
+                // If baseType already contains the full info (from legacy), use it.
+                // Otherwise combine.
+                let filename = baseType;
+                if (seg && !baseType.includes('_' + seg)) {
+                    filename += '_' + seg;
+                }
+                return `/ static / img / ${filename}_${assetSide}.png`;
+            } else {
+                return `/ static / img / ${baseType}${sType}_${assetSide}.png`;
+            }
+        }
+
+
+
+        function closeSheet() {
+            document.getElementById('composition-sheet').classList.remove('open');
+            document.body.classList.remove('no-scroll');
+
+            // Fix: Clear trace when closing
+            if (activeTrace) {
+                map.removeLayer(activeTrace);
+                activeTrace = null;
+            }
+            // Reset edit state
+            editingJourneyId = null;
+            selectedTrain = null;
+        }
+        function openAuthModal() { document.getElementById('auth-overlay').style.display = 'flex'; }
+        function setLanguage(lang) {
+            // Save state
+            const state = {
+                tab: currentTab,
+                train: document.getElementById('input-train').value,
+                from: document.getElementById('input-from').value,
+                to: document.getElementById('input-to').value,
+                station: document.getElementById('input-station').value
+            };
+            localStorage.setItem('treinfo_search_state', JSON.stringify(state));
+
+            fetch(`/ api / set_lang ? lang = ${lang} `)
+                .then(() => location.reload());
+        }
+
+        function toggleAuthMode() {
+            authMode = authMode === 'login' ? 'register' : 'login';
+            document.getElementById('auth-title').innerText = authMode === 'login' ? '{{ t("auth_signin") }}' : '{{ t("auth_register") }}';
+            document.getElementById('auth-switch').innerText = authMode === 'login' ? '{{ t("auth_new_here") }}' : '{{ t("auth_already_account") }}';
+            document.getElementById('email-container').style.display = authMode === 'login' ? 'none' : 'block';
+        }
+
+        function showForgotPassword() {
+            document.getElementById('auth-title').innerText = '{{ t("auth_forgot_pwd") }}';
+            document.getElementById('auth-normal-fields').style.display = 'none';
+            document.getElementById('auth-forgot-fields').style.display = 'block';
+        }
+
+        function hideForgotPassword() {
+            document.getElementById('auth-title').innerText = authMode.toUpperCase();
+            document.getElementById('auth-normal-fields').style.display = 'block';
+            document.getElementById('auth-forgot-fields').style.display = 'none';
+        }
+
+        async function submitForgotPassword() {
+            const email = document.getElementById('forgot-email').value;
+            if (!email) return alert("Please enter your email.");
+
+            const res = await fetch('/api/forgot_password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: email })
+            });
+            const data = await res.json();
+            if (data.success) {
+                alert(data.message);
+                hideForgotPassword();
+            } else {
+                alert(data.error);
+            }
+        }
+
+        async function submitResetPassword() {
+            const token = document.getElementById('reset-token').value;
+            const password = document.getElementById('new-password').value;
+            if (!password) return alert("Please enter a new password.");
+
+            const res = await fetch('/api/reset_password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token: token, password: password })
+            });
+            const data = await res.json();
+            if (data.success) {
+                alert(data.message);
+                window.location.href = '/'; // Clear token from URL
+            } else {
+                alert(data.error);
+            }
+        }
+
+        async function submitAuth() {
+            /* Disabled */
+        }
+
+        async function setLanguage(lang) {
+            const res = await fetch(`/ api / set_lang ? lang = ${lang}`);
+            const data = await res.json();
+            if (data.success) {
+                location.reload();
+            } else {
+                // Fallback if generic success true
+                location.reload();
+            }
+        }
+
+        function toggleSearch() {
+            const p = document.getElementById('main-panel');
+            p.classList.toggle('collapsed');
+            const icon = document.querySelector('#search-toggle-btn i');
+            if (p.classList.contains('collapsed')) {
+                icon.className = 'bi bi-search';
+            } else {
+                icon.className = 'bi bi-chevron-left';
+            }
+        }
+
+        function toggleSheetMin() {
+            const s = document.getElementById('composition-sheet');
+            s.classList.toggle('minimized');
+        }
+
+
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/static/sw.js');
+            });
+        }
+        // Auto-close navbar on mobile
+        document.querySelectorAll('.navbar-nav .nav-link').forEach(link => {
+            link.addEventListener('click', () => {
+                const toggler = document.querySelector('.navbar-toggler');
+                const collapse = document.querySelector('.navbar-collapse');
+                if (window.getComputedStyle(toggler).display !== 'none' && collapse.classList.contains('show')) {
+                    toggler.click(); // Simulate click to close using Bootstrap's native toggle logic
+                }
+            });
+        });
+
+    </script>
+</body>
+
+</html>
