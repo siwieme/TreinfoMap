@@ -996,18 +996,15 @@
             if (adjustDiv) adjustDiv.style.display = 'none';
             if (listDiv) listDiv.style.display = 'block';
 
-            // Initial Title: Type Number (Route added later)
-            if (sheetTitle) sheetTitle.innerText = `${type} ${number}`;
-
-            // Subtitle: Date
-            // Format 2026-01-09 to 09/01/2026 if necessary? 
-            let dObj = new Date(date);
-            if (!isNaN(dObj.getTime())) {
-                let dStr = dObj.toLocaleDateString('en-GB'); // DD/MM/YYYY
-                document.getElementById('sheet-train-route').innerText = dStr;
-            } else {
-                document.getElementById('sheet-train-route').innerText = date || 'Today';
+            // Initial Title: "Trein 7013 (09/01/2026)"
+            let dateStr = date || 'Today';
+            if (date) {
+                let dObj = new Date(date);
+                if (!isNaN(dObj.getTime())) {
+                    dateStr = dObj.toLocaleDateString('en-GB'); // DD/MM/YYYY
+                }
             }
+            if (sheetTitle) sheetTitle.innerText = `${type} ${number} (${dateStr})`;
 
             editingJourneyId = null;
             const sheet = document.getElementById('composition-sheet');
@@ -1015,11 +1012,13 @@
                 sheet.classList.remove('sheet-large');
                 sheet.classList.add('open');
             }
-            // document.getElementById('sheet-train-route').innerText = route; // Replaced by Date above
+
+            // Initial Subtitle: "" (Filled by loadComposition)
+            document.getElementById('sheet-train-route').innerText = '';
             document.body.classList.add('no-scroll');
 
             // Load stops
-            loadComposition(trainId, startStop, endStop, 'read', type, number);
+            loadComposition(trainId, startStop, endStop, 'read', type, number, dateStr);
         }
 
         async function showOnMap(trainId, start, end, number = null, destination = null) {
@@ -1048,7 +1047,7 @@
 
         // updateTraceRange disabled as inputs are removed
 
-        async function loadComposition(trainId, startContext = null, endContext = null, mode = 'new', type = 'Trein', number = '') {
+        async function loadComposition(trainId, startContext = null, endContext = null, mode = 'new', type = 'Trein', number = '', dateStr = '') {
             const res = await fetch(`/api/composition/${trainId}`);
             const data = await res.json();
             const target = document.getElementById('unit-target');
@@ -1056,11 +1055,15 @@
             const endSelect = document.getElementById('select-end-stop');
             const listTarget = document.getElementById('route-details-list');
 
-            // Update Title with Route: "P 7013 Sint-Niklaas - Schaarbeek"
+            // Header Update
+            // Title: Trein 7013 (09/01/2026) -> Already set in traceTrain? Re-affirm.
+            document.getElementById('sheet-train-title').innerText = `${type} ${selectedTrainNumber || number} (${dateStr})`;
+
+            // Subtitle: Start -> End
             if (data.stops && data.stops.length > 0) {
                 const startName = data.stops[0].name;
                 const endName = data.stops[data.stops.length - 1].name;
-                document.getElementById('sheet-train-title').innerText = `${type} ${selectedTrainNumber || number} ${startName} - ${endName}`;
+                document.getElementById('sheet-train-route').innerText = `${startName} → ${endName}`;
             }
 
             // Populate Horizontal Timeline (Always)

@@ -130,7 +130,7 @@ body.view-trips #trips-view {
 }
 
 .command-panel.collapsed {
-    transform: translateY(-50%) translateX(-90%);
+    transform: translateY(-50%) translateX(-100%);
     overflow: visible !important;
 }
 

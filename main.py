@@ -740,16 +740,56 @@ def get_infrabel_id(sncb_stop_id, stop_name=None):
     return None
 
 def build_railway_graph():
-    """Builds an adjacency list from InfrabelStationToStation segments."""
+    """Builds an adjacency list from InfrabelStationToStation segments using Haversine weights."""
     global RAILWAY_GRAPH
     try:
         with app.app_context():
             print("🛠️  Building railway graph...")
+            
+            # Load Coordinates
+            all_ops = InfrabelOperationalPoint.query.all()
+            coords = {op.id: (op.latitude, op.longitude) for op in all_ops if op.latitude and op.longitude}
+            
             segments = InfrabelStationToStation.query.all()
             new_graph = {}
+            
+            def haversine(lat1, lon1, lat2, lon2):
+                R = 6371.0 # Radius of Earth in km
+                dlat = math.radians(lat2 - lat1)
+                dlon = math.radians(lon2 - lon1)
+                a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
+                c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+                return R * c
+
             for seg in segments:
-                u, v, w = seg.stationfrom_id, seg.stationto_id, seg.length
-                if w is None: w = 1.0 # Fallback weight for missing length
+                u, v = seg.stationfrom_id, seg.stationto_id
+                
+                # Calculate Weight
+                w = seg.length
+                
+                # If length is missing or suspiciously 1.0 (default), try Haversine
+                if w is None:
+                    if u in coords and v in coords:
+                        w = haversine(coords[u][0], coords[u][1], coords[v][0], coords[v][1])
+                    else:
+                        w = 1.0 # Last resort fallback
+                
+                if w is None: w = 1.0 # Double check
+                
+                # --- MANUAL WEIGHT ADJUSTMENT ---
+                # User Request: Increment weight between Landen (FLND) and Ans (FANS) to force HSL usage.
+                # The classic line goes FLND -> FWR -> FANS. We penalize these segments heavily.
+                # FLND=Landen, FWR=Waremme, FANS=Ans, FTNN=Tienen
+                
+                high_cost_nodes = ['FLND', 'FWR', 'FANS'] 
+                # If both u and v are in this set, it's a classic line segment from Landen to Ans.
+                if u in high_cost_nodes and v in high_cost_nodes:
+                    w *= 10000.0 # Make it INSANELY more expensive (Force HSL)
+                
+                # Also penalize Tienen -> Landen to be sure? 
+                if (u=='FTNN' and v=='FLND') or (v=='FTNN' and u=='FLND'):
+                    w *= 1000.0
+
                 if u not in new_graph: new_graph[u] = []
                 if v not in new_graph: new_graph[v] = []
                 new_graph[u].append((v, w, seg.id))
@@ -1210,188 +1250,190 @@ def sync_day(target_date, time_limit=None):
         if new_trains_count > 0:
             print(f"   ✅ {new_trains_count} ritten toegevoegd voor {target_str}.")
 
-def populate_todays_schedule():
-    """Daily job to clean up old ritten and sync upcoming schedules."""
+
+
+def import_data(target_date_str, skip_if_exists=False):
+    """Imports train data for a specific date (YYYY-MM-DD)."""
     global static_data
-    with app.app_context():
-        # Huidige tijd en datum bepalen
-        now = datetime.now()
-        today = now
-        tomorrow = now + timedelta(days=1)
-        current_year = now.strftime("%Y")
+    
+    # Needs pandas, db, models
+    # Expects static_data to be loaded
+    if not static_data:
+        download_static_data() # Ensure data is loaded
 
-        if today.strftime("%m%d") >= "1215":
-            current_year = str(int(current_year) + 1)
-
-        try:
-            download_static_data()
-            sync_translations_to_db()
-        except Exception as e:
-            print(f"    Error bij download static data: {e}")
-
-        # -------------------------------------------------------------
-        # 1. OUDE RITTEN OPSCHONEN
-        # -------------------------------------------------------------
-        print("🧹 Oude ritten afsluiten...")
-        # We houden alleen VANDAAG en MORGEN actief. Gisteren en eerder gaat naar FINISHED.
-        allowed_dates = [today.strftime("%Y%m%d"), tomorrow.strftime("%Y%m%d")]
+    # OPTIMIZATION: On boot, if data exists, skip heavy processing
+    if skip_if_exists:
+        count = Train.query.filter_by(date=target_date_str).count()
+        if count > 0:
+            print(f"   ⏩ Skipping {target_date_str} (Data exists: {count} trains).")
+            return
         
-        old_active_trains = Train.query.filter(
-            Train.date.notin_(allowed_dates),
-            Train.status == 'ACTIVE'
-        ).all()
+    print(f"   📥 Importing data for {target_date_str}...")
+    try:
+        target_date = datetime.strptime(target_date_str, "%Y-%m-%d")
+    except ValueError:
+        print(f"   ❌ Invalid date format: {target_date_str}")
+        return
+
+    # 1. Active Services
+    active_services = get_active_services(target_date)
+    if not active_services:
+        print(f"   ⚠️ No active services found for {target_date_str}.")
+        return
+
+    # 2. Filter Trips
+    trips_df = static_data['trips']
+    if trips_df is None or trips_df.empty:
+        print("   ❌ Trips data empty.")
+        return
+
+    # Filter by service_id
+    trips_active = trips_df[trips_df['service_id'].isin(active_services)].copy()
+    
+    if trips_active.empty:
+        return
+
+    # 3. Add Rank
+    def calculate_rank(row, target_date_s):
+         tid = str(row['trip_id'])
+         # Regex for date in trip_id
+         date_at_end_match = re.search(r':(\d{8})$', tid)
+         target_compact = target_date_s.replace('-', '')
+         if date_at_end_match:
+             if date_at_end_match.group(1) == target_compact: return 1
+             return 2
+         if re.search(r':\d{8}:', tid): return 3
+         return 4
+
+    trips_active['rank'] = trips_active.apply(calculate_rank, axis=1, args=(target_date_str,))
+    
+    # Merge details
+    # We must merge trip_starts to get 'departure_time'
+    if 'trip_starts' in static_data:
+        trips_active = trips_active.merge(static_data['trip_starts'], on='trip_id', suffixes=('', '_start'))
+
+    merged = trips_active \
+        .merge(static_data['routes'], on='route_id') \
+        .merge(static_data['trip_ends'], on='trip_id', suffixes=('_start', '_end')) \
+        .merge(static_data['trip_counts'], on='trip_id')
+
+    # Sort and Dedup
+    merged.sort_values(by=['trip_short_name', 'rank', 'stop_count'], ascending=[True, True, False], inplace=True)
+    final_df = merged.drop_duplicates(subset=['trip_short_name'], keep='first')
+    
+    # 4. Save to DB
+    df_st = pd.read_csv(os.path.join(DATA_FOLDER, 'stop_times.txt'), dtype=str)
+    df_stops_static = pd.read_csv(os.path.join(DATA_FOLDER, 'stops.txt'), dtype=str)
+    
+    count_synced = 0
+    
+    for _, r in final_df.iterrows():
+        train_num = r.get('trip_short_name', '?')
+        if not train_num or train_num == '?': continue
         
-        if old_active_trains:
-            for old_train in old_active_trains:
-                old_train.status = 'FINISHED'
-            db.session.commit()
-            print(f"   ✅ {len(old_active_trains)} ritten van gisteren (of eerder) afgesloten.")
-
-        # -------------------------------------------------------------
-        # 2. LOOP: -2 DAGEN T/M +6 DAGEN
-        # -------------------------------------------------------------
-        days_to_process = []
-        for i in range(-2, 7):
-            dt = now + timedelta(days=i)
-            # if i in [0, 1, 2], we overwrite existing schedule data.
-            # Otherwise (past -2, -1 or far future 3-6), we only add if missing.
-            should_overwrite = (0 <= i <= 2)
-            days_to_process.append((dt, None, should_overwrite))
-
-        for target_date, time_limit, should_overwrite in days_to_process:
-            target_str = target_date.strftime("%Y%m%d")
-            print(f"🗓️  Syncing {target_str} (Overwrite: {should_overwrite})...")
-
-            # B. Haal actieve services op voor DEZE specifieke dag
-            active_services = get_active_services(target_date)
-            if not active_services:
-                print(f"   Geen dienstregeling gevonden voor {target_str}.")
-                continue
-
-            # C. Data ophalen uit Pandas
-            trips_df = static_data['trips']
-            trips_active = trips_df[trips_df['service_id'].isin(active_services)].copy()
-
-            # D. TIJDFILTER (Specifiek voor de nachtritten van morgen)
-            trips_active = trips_active.merge(static_data['trip_starts'], on='trip_id')
-
-            if time_limit:
-                count_before = len(trips_active)
-                trips_active = trips_active[trips_active['departure_time'] < time_limit]
-                print(f"   🕒 Nachtfilter: {count_before} -> {len(trips_active)} ritten over.")
-            
-            if trips_active.empty:
-                continue
-
-            # ---------------------------------------------------------
-            # E. VERBETERDE RANKING LOGICA (Gecorrigeerd)
-            # ---------------------------------------------------------
-
-            def calculate_rank(row, target_date_str):
-                tid = str(row['trip_id'])
-                date_at_end_match = re.search(r':(\d{8})$', tid)
-                if date_at_end_match:
-                    found_date = date_at_end_match.group(1)
-                    if found_date == target_date_str: return 1
-                    return 2
-                if re.search(r':\d{8}:', tid): return 3
-                return 4
-
-            trips_active['rank'] = trips_active.apply(calculate_rank, axis=1, args=(target_str,))
-
-            # Nu pas mergen met de rest
-            merged = trips_active \
-                .merge(static_data['routes'], on='route_id') \
-                .merge(static_data['trip_ends'], on='trip_id', suffixes=('_start', '_end')) \
-                .merge(static_data['trip_counts'], on='trip_id')
-
-            # Sorteren op Rank (1-4) en daarna op stop_count (meeste stops eerst)
-            merged.sort_values(
-                by=['trip_short_name', 'rank', 'stop_count'], 
-                ascending=[True, True, False], 
-                inplace=True
+        # Check existence
+        existing_train = Train.query.filter_by(train_number=train_num, date=target_date_str).first()
+        
+        # Logic: If exists, update. If not, create.
+        if existing_train:
+            # Update
+            existing_train.trip_id = r['trip_id']
+            existing_train.route_name = r.get('route_long_name', '')
+            existing_train.destination = r.get('trip_headsign') or r.get('stop_name', '')
+            # departure_time might be in r as 'departure_time' or 'departure_time_start' depending on merges
+            # trip_starts has 'departure_time'
+            existing_train.departure_time = r.get('departure_time')
+            existing_train.arrival_time = r.get('arrival_time')
+            TrainStop.query.filter_by(train_id=existing_train.id).delete()
+            train_obj = existing_train
+        else:
+            train_obj = Train(
+                trip_id=r['trip_id'],
+                train_number=train_num,
+                route_name=r.get('route_long_name', ''),
+                destination=r.get('trip_headsign') or r.get('stop_name', ''),
+                date=target_date_str,
+                departure_time=r.get('departure_time'),
+                arrival_time=r.get('arrival_time')
             )
+            db.session.add(train_obj)
+        
+        db.session.flush() # Get ID
+        
+        # Stops
+        this_trip_stops = df_st[df_st['trip_id'] == r['trip_id']].copy()
+        this_trip_stops['stop_type'] = this_trip_stops.apply(
+            lambda row: 'STOP' if not (row['pickup_type'] == '1' and row['drop_off_type'] == '1') else 'DOORRIT', axis=1
+        )
+        this_trip_stops = this_trip_stops.merge(df_stops_static[['stop_id', 'stop_name']], on='stop_id')
+        this_trip_stops['stop_sequence'] = pd.to_numeric(this_trip_stops['stop_sequence'])
+        this_trip_stops.sort_values('stop_sequence', inplace=True)
+        
+        stop_objects = []
+        for _, s_row in this_trip_stops.iterrows():
+             stop_objects.append(TrainStop(
+                 train_id=train_obj.id,
+                 stop_id=s_row['stop_id'],
+                 stop_name=s_row['stop_name'],
+                 stop_type=s_row['stop_type'],
+                 arrival_time=s_row['arrival_time'],
+                 departure_time=s_row['departure_time'],
+                 stop_sequence=int(s_row['stop_sequence'])
+             ))
+        db.session.bulk_save_objects(stop_objects)
+        count_synced += 1
+        
+    db.session.commit()
+    print(f"   ✅ Imported {count_synced} trains for {target_date_str}.")
 
-            # Ontdubbelen: De beste blijft over
-            final_df = merged.drop_duplicates(subset=['trip_short_name'], keep='first')
+def populate_todays_schedule(fast_boot=False):
+    """
+    Populates schedule for [today-7, today+7] and cleans up old data.
+    Runs at 4 AM daily.
+    """
+    with app.app_context():
+        today = datetime.now()
+        
+        # 1. Cleanup old data (older than 7 days ago, or future > 7 days?)
+        # User said "database may also be -7 to +7".
+        # Let's keep data strictly within window.
+        min_date = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+        max_date = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+        
+        print(f"🧹 [CLEANUP] Removing trains outside {min_date} to {max_date}...")
+        try:
+            # First delete stops for the trains we are about to delete
+            # This fixes ForeignKeyViolation
+            trains_to_delete = db.session.query(Train.id).filter(or_(Train.date < min_date, Train.date > max_date)).subquery()
+            db.session.query(TrainStop).filter(TrainStop.train_id.in_(trains_to_delete)).delete(synchronize_session=False)
             
-            # ---------------------------------------------------------
-            # F. OPSLAAN (Gecorrigeerd voor trip_id & functionele stops)
-            # ---------------------------------------------------------
-            df_st = pd.read_csv(os.path.join(DATA_FOLDER, 'stop_times.txt'), dtype=str)
-            df_stops_static = pd.read_csv(os.path.join(DATA_FOLDER, 'stops.txt'), dtype=str)
-            
-            count_synced = 0
-            
-            for _, r in final_df.iterrows():
-                train_num = r.get('trip_short_name', '?')
-                if not train_num or train_num == '?':
-                    continue
-
-                # Check if train already exists for this date
-                existing_train = Train.query.filter_by(train_number=train_num, date=target_str).first()
-                
-                if existing_train:
-                    if not should_overwrite:
-                        # Skip if we are not in overwrite range (-2, -1, 3, 4, 5, 6)
-                        continue
-
-                    # Update existing train metadata
-                    existing_train.trip_id = r['trip_id']
-                    existing_train.route_name = r.get('route_long_name', '')
-                    existing_train.destination = r.get('trip_headsign') or r.get('stop_name', '')
-                    existing_train.departure_time = r['departure_time']
-                    existing_train.arrival_time = r['arrival_time']
-                    
-                    # Clear existing stops to overwrite them
-                    TrainStop.query.filter_by(train_id=existing_train.id).delete()
-                    train_obj = existing_train
-                else:
-                    # Create new train
-                    train_obj = Train(
-                        trip_id=r['trip_id'], 
-                        train_number=train_num,
-                        route_name=r.get('route_long_name', ''), 
-                        destination=r.get('trip_headsign') or r.get('stop_name', ''),
-                        date=target_str,
-                        departure_time=r['departure_time'],
-                        arrival_time=r['arrival_time'] 
-                    )
-                    db.session.add(train_obj)
-                
-                db.session.flush() 
-
-                # Ingest all stops for this trip
-                this_trip_stops = df_st[df_st['trip_id'] == r['trip_id']].copy()
-                
-                this_trip_stops['stop_type'] = this_trip_stops.apply(
-                    lambda row: 'STOP' if not (row['pickup_type'] == '1' and row['drop_off_type'] == '1') else 'DOORRIT',
-                    axis=1
-                )
-
-                this_trip_stops = this_trip_stops.merge(df_stops_static[['stop_id', 'stop_name']], on='stop_id')
-                this_trip_stops['stop_sequence'] = pd.to_numeric(this_trip_stops['stop_sequence'])
-                this_trip_stops.sort_values('stop_sequence', inplace=True)
-
-                stop_objects = []
-                for _, s_row in this_trip_stops.iterrows():
-                    stop_objects.append(TrainStop(
-                        train_id=train_obj.id,
-                        stop_id=s_row['stop_id'],
-                        stop_name=s_row['stop_name'],
-                        stop_type=s_row['stop_type'],
-                        arrival_time=s_row['arrival_time'],
-                        departure_time=s_row['departure_time'],
-                        stop_sequence=int(s_row['stop_sequence'])
-                    ))
-                
-                db.session.bulk_save_objects(stop_objects)
-                count_synced += 1
-
+            # Now delete trains
+            db.session.query(Train).filter(or_(Train.date < min_date, Train.date > max_date)).delete(synchronize_session=False)
             db.session.commit()
+            print("✅ [CLEANUP] Old data removed.")
+        except Exception as e:
+            db.session.rollback()
+            print(f"❌ [CLEANUP] Failed: {e}")
 
-            if count_synced > 0:
-                print(f"   ✅ {count_synced} ritten gesynchroniseerd voor {target_str}.")
+        # 2. Populate/Update window
+        print(f"📅 [SYNC] Updating schedule for range [-7, +7] (FastBoot={fast_boot})...")
+        for i in range(-7, 8):
+            target_date = (today + timedelta(days=i)).strftime("%Y-%m-%d")
+            print(f"   🔄 Syncing {target_date}...")
+            try:
+                # Use fast_boot to skip if data exists
+                import_data(target_date, skip_if_exists=fast_boot)
+            except Exception as e:
+                print(f"   ⚠️ Failed to sync {target_date}: {e}")
+        
+        print("✅ [SYNC] Window update completed.")
+
+# ... (rest of main.py until end)
+
+# End of main.py logic update:
+# Search for the startup loop to pass fast_boot=True
+
+
 
 def sync_translations_to_db():
     """Leest translations.txt en zet het in de database zonder duplicaten."""
@@ -2317,7 +2359,13 @@ def index():
         trains = []
     else:
         # Zoek op treinnummer als er wel een q is op de index
-        trains = query.filter(Train.train_number == q).order_by(Train.date.desc()).limit(10).all()
+        # [MODIFIED] Extract digits if present to handle "IC 2831"
+        clean_q = ''.join(filter(str.isdigit, q))
+        if clean_q:
+            trains = query.filter(Train.train_number == clean_q).order_by(Train.date.desc()).limit(10).all()
+        else:
+            # Fallback if no digits (e.g. station name entered in wrong box? unlikely on index which assumes train nr)
+            trains = []
 
     today = datetime.now().strftime("%Y-%m-%d")
     return render_template('index.html', 
@@ -2337,7 +2385,8 @@ def api_plan_journey():
     if not from_name or not to_name: return jsonify([])
     
     raw_date = request.args.get('date', '')
-    target_date = raw_date.replace('-', '') if raw_date else datetime.now().strftime("%Y%m%d")
+    # [MODIFIED] Keep dashes to match DB format YYYY-MM-DD
+    target_date = raw_date if raw_date else datetime.now().strftime("%Y-%m-%d")
     hour_param = request.args.get('hour', '')
     
     # 1. Resolve 'from' and 'to' stations
@@ -2398,12 +2447,19 @@ def api_plan_journey():
 @app.route('/api/search_trains')
 def api_search_trains():
     q = request.args.get('q', '').strip()
-    date_param = request.args.get('date', '').replace('-', '')
+    # [MODIFIED] Do not strip dashes, match YYYY-MM-DD
+    date_param = request.args.get('date', '')
     if not q: return jsonify([])
     
     # Check if 'q' looks like a number or a station name
-    if q.isdigit():
-        query = Train.query.filter(Train.train_number.like(f"%{q}%"))
+    # [MODIFIED] Check if it contains digits (e.g. "IC 2831")
+    import re
+    digit_match = re.search(r'\d+', q)
+    
+    # If purely digits or looks like "Type Number"
+    if q.isdigit() or (digit_match and len(digit_match.group()) >= 2 and len(q) < 10):
+        clean_q = digit_match.group() if digit_match else q
+        query = Train.query.filter(Train.train_number.like(f"%{clean_q}%"))
         if date_param: query = query.filter(Train.date == date_param)
         trains = query.order_by(Train.date.desc()).limit(20).all()
     else:
@@ -2448,7 +2504,8 @@ def api_station_board():
     if not station_name: return jsonify([])
     
     raw_date = request.args.get('date', '')
-    target_date = raw_date.replace('-', '') if raw_date else datetime.now().strftime("%Y%m%d")
+    # [MODIFIED] Keep dashes to match DB format YYYY-MM-DD
+    target_date = raw_date if raw_date else datetime.now().strftime("%Y-%m-%d")
     hour_param = request.args.get('hour', '')
     
     search_query = station_name.lower()
@@ -2500,7 +2557,8 @@ def search():
     q = request.args.get('q', '').strip()
     # Haal datum op en converteer naar YYYYMMDD formaat
     raw_date = request.args.get('date', '') 
-    search_date = raw_date.replace('-', '') if raw_date else ''
+    # [MODIFIED] Use YYYY-MM-DD
+    search_date = raw_date if raw_date else ''
     
     try: limit = int(request.args.get('limit', 100))
     except: limit = 100
@@ -2512,7 +2570,12 @@ def search():
     station_names_to_match = []
 
     if search_type == 'train_number':
-        query = query.filter(Train.train_number == q)
+        # [MODIFIED] Relaxed search
+        clean_q = ''.join(filter(str.isdigit, q))
+        if clean_q:
+             query = query.filter(Train.train_number == clean_q)
+        else:
+             query = query.filter(Train.train_number == q)
     elif search_type == 'material_number':
         query = query.join(TrainUnit).filter(TrainUnit.material_number == q)
     elif search_type == 'material_type':
@@ -2749,7 +2812,9 @@ def run_startup_tasks():
             # Run sync if it's the first time OR if it's a new day and it's 4 AM or later
             if force_first_run or (current_date != last_sync_date and current_hour >= 4):
                 print(f"🌅 [BACKEND] Running sync for {current_date} (Force: {force_first_run})...")
-                populate_todays_schedule()
+                # On startup (Force=True), skip existing days to unblock server quickly.
+                # On daily schedule (Force=False), do full sync.
+                populate_todays_schedule(fast_boot=force_first_run)
                 last_sync_date = current_date
                 force_first_run = False
                 print("✅ [BACKEND] Sync completed.")
