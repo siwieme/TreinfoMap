@@ -708,10 +708,15 @@ def get_infrabel_id(sncb_stop_id, stop_name=None):
         if 'gent-sint-pieters' in lname: return 'FGSP'
         if 'gent-dampoort' in lname: return 'FGDM'
         if 'gentbrugge' in lname: return 'FUGE'
+        # HSL FIX: Map Leuven to FLV (Leuven Vorming/Main HSL Node) instead of FL (Broken)
+        if 'leuven' in lname and 'heverlee' not in lname: return 'FLV'
 
     # 1. Direct try
     cand = StationMapping.query.filter_by(sncb_id=sncb_stop_id).first()
-    if cand: return cand.infrabel_id
+    if cand: 
+        # Override for Leuven if database maps to FL
+        if cand.infrabel_id == 'FL': return 'FLV'
+        return cand.infrabel_id
     
     # 2. Try with/without 'S' prefix
     alt_id = sncb_stop_id[1:] if sncb_stop_id.startswith('S') else f"S{sncb_stop_id}"
@@ -777,23 +782,39 @@ def build_railway_graph():
                 if w is None: w = 1.0 # Double check
                 
                 # --- MANUAL WEIGHT ADJUSTMENT ---
-                # User Request: Increment weight between Landen (FLND) and Ans (FANS) to force HSL usage.
-                # The classic line goes FLND -> FWR -> FANS. We penalize these segments heavily.
-                # FLND=Landen, FWR=Waremme, FANS=Ans, FTNN=Tienen
+
+                # BLOCK BAD DATA: Segment 875/1319 claims to be FL->ANS with 5km len. 
+                # Seg 321/1249 claims FL->LGR (Liège) with 5km len.
+                # Seg 1305/1310 claims FL->GVX with 16km (Voroux teleport).
+                # This breaks graph logic. Block it.
+                bad_segs = [875, 1319, 321, 1249, 1305, 1310]
+                if seg.id in bad_segs:
+                    continue # Skip adding this edge entirely
+
+                # HSL FIX: Penalize Classic Line Landen-Ans
+                # FWR = Waremme, FLD = Landen (Correct ID)
+                # We penalize ANY edge connected to Waremme heavily.
+                # We also penalize Landen to force usage of HSL for bypass.
                 
-                high_cost_nodes = ['FLND', 'FWR', 'FANS'] 
-                # If both u and v are in this set, it's a classic line segment from Landen to Ans.
-                if u in high_cost_nodes and v in high_cost_nodes:
-                    w *= 10000.0 # Make it INSANELY more expensive (Force HSL)
+                avoid_nodes = ['FWR', 'FLD', 'FRM'] 
+                if u in avoid_nodes or v in avoid_nodes:
+                     w *= 2000.0
                 
-                # Also penalize Tienen -> Landen to be sure? 
-                if (u=='FTNN' and v=='FLND') or (v=='FTNN' and u=='FLND'):
+                # FAVOR HSL: ANS <-> FLV (Leuven Vorming/HSL Start)
+                # This segment is ~66km. We slightly favor it to ensure selection over penalized classic.
+                hsl_nodes = ['FLV', 'ANS']
+                if u in hsl_nodes and v in hsl_nodes:
+                    w *= 0.8 # Slight preference
+                
+                # Also penalize Tienen -> Landen
+                if (u=='FTNN' and v=='FLD') or (v=='FTNN' and u=='FLD'):
                     w *= 1000.0
 
                 if u not in new_graph: new_graph[u] = []
                 if v not in new_graph: new_graph[v] = []
                 new_graph[u].append((v, w, seg.id))
                 new_graph[v].append((u, w, seg.id))
+
             RAILWAY_GRAPH = new_graph
             print(f"✅ Graph built with {len(RAILWAY_GRAPH)} nodes.")
     except Exception as e:
@@ -929,6 +950,25 @@ def get_trace_geometry(train_id, start_stop_id=None, end_stop_id=None):
         path_seg_ids = find_path(id1, id2)
         if path_seg_ids:
             for seg_id in path_seg_ids:
+                # Handle Virtual Edges
+                if isinstance(seg_id, str) and seg_id.startswith('V_'):
+                    # Parse V_FROM_TO
+                    try:
+                        _, u, v = seg_id.split('_')
+                        p1 = get_pt_coords(u)
+                        p2 = get_pt_coords(v)
+                        if p1 and p2:
+                            features.append({
+                                "type": "Feature",
+                                "geometry": {
+                                    "type": "LineString",
+                                    "coordinates": [p1, p2]
+                                },
+                                "properties": { "from_id": u, "to_id": v, "virtual": True }
+                            })
+                    except:
+                        continue
+                    continue
                 seen_segment_ids.add(seg_id)
                 seg = db.session.get(InfrabelStationToStation, seg_id)
                 if seg:

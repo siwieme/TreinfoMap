@@ -125,12 +125,43 @@ def build_railway_graph():
             for seg in segments:
                 u, v, w = seg.stationfrom_id, seg.stationto_id, seg.length
                 if w is None: w = 1.0 
+                # --- MANUAL WEIGHT ADJUSTMENT ---
+                # HSL FIX: Penalize Classic Line Landen-Ans
+                # Determine if segment touches the classic line avoidance nodes
+                # FWR = Waremme, FLND = Landen, FANS = Ans
+                # We penalize ANY edge connected to Waremme heavily.
+                # We also penalize Landen to force usage of HSL for bypass.
+                avoid_nodes = ['FWR', 'FLND', 'FEZ', 'FRM'] # Waremme, Landen, Ezemaal, Remicourt
+                if u in avoid_nodes or v in avoid_nodes:
+                     w *= 2000.0
+
                 if u not in new_graph: new_graph[u] = []
                 if v not in new_graph: new_graph[v] = []
                 new_graph[u].append((v, w, seg.id))
                 new_graph[v].append((u, w, seg.id))
+            
+            # --- VIRTUAL EXTREME FIX FOR AIRPORT (FBNL) ---
+            # Ensure connectivity to avoiding reversals
+            # FBNL = Brussels Airport Zaventem
+            # FN   = Brussels North
+            # FM   = Mechelen 
+            # FL   = Leuven
+            virtual_edges = [
+                ('FBNL', 'FM', 0.1, 'V_FBNL_FM'),
+                ('FBNL', 'FN', 0.1, 'V_FBNL_FN'),
+                ('FBNL', 'FL', 0.1, 'V_FBNL_FL')
+            ]
+            for u, v, w, vid in virtual_edges:
+                if u not in new_graph: new_graph[u] = []
+                if v not in new_graph: new_graph[v] = []
+                # Check if edge already exists to avoid duplicates? 
+                # Dijkstra handles multiple edges fine, picks cheapest.
+                # We give these favorable weights (approx straight line).
+                new_graph[u].append((v, w, vid))
+                new_graph[v].append((u, w, vid))
+
             RAILWAY_GRAPH = new_graph
-            print(f"✅ Graph built with {len(RAILWAY_GRAPH)} nodes.")
+            print(f"✅ Graph built with {len(RAILWAY_GRAPH)} nodes (incl. Virtual Airport Links).")
     except Exception as e:
         print(f"⚠️ Error building graph: {e}")
 
@@ -198,6 +229,26 @@ def get_trace_geometry(train_id, start_stop_id=None, end_stop_id=None):
         path_seg_ids = find_path(id1, id2)
         if path_seg_ids:
             for seg_id in path_seg_ids:
+                # Handle Virtual Edges
+                if isinstance(seg_id, str) and seg_id.startswith('V_'):
+                    # Parse V_FROM_TO
+                    try:
+                        _, u, v = seg_id.split('_')
+                        p1 = get_pt_coords(u)
+                        p2 = get_pt_coords(v)
+                        if p1 and p2:
+                            features.append({
+                                "type": "Feature",
+                                "geometry": {
+                                    "type": "LineString",
+                                    "coordinates": [p1, p2]
+                                },
+                                "properties": { "from_id": u, "to_id": v, "virtual": True }
+                            })
+                    except:
+                        continue
+                    continue
+
                 seg = db.session.get(InfrabelStationToStation, seg_id)
                 if seg:
                     try:
