@@ -125,16 +125,6 @@ def build_railway_graph():
             for seg in segments:
                 u, v, w = seg.stationfrom_id, seg.stationto_id, seg.length
                 if w is None: w = 1.0 
-                # --- MANUAL WEIGHT ADJUSTMENT ---
-                # HSL FIX: Penalize Classic Line Landen-Ans
-                # Determine if segment touches the classic line avoidance nodes
-                # FWR = Waremme, FLND = Landen, FANS = Ans
-                # We penalize ANY edge connected to Waremme heavily.
-                # We also penalize Landen to force usage of HSL for bypass.
-                avoid_nodes = ['FWR', 'FLND', 'FEZ', 'FRM'] # Waremme, Landen, Ezemaal, Remicourt
-                if u in avoid_nodes or v in avoid_nodes:
-                     w *= 2000.0
-
                 if u not in new_graph: new_graph[u] = []
                 if v not in new_graph: new_graph[v] = []
                 new_graph[u].append((v, w, seg.id))
@@ -149,7 +139,7 @@ def build_railway_graph():
             virtual_edges = [
                 ('FBNL', 'FM', 0.1, 'V_FBNL_FM'),
                 ('FBNL', 'FN', 0.1, 'V_FBNL_FN'),
-                ('FBNL', 'FL', 0.1, 'V_FBNL_FL')
+                ('FBNL', 'FLV', 0.1, 'V_FBNL_FLV')
             ]
             for u, v, w, vid in virtual_edges:
                 if u not in new_graph: new_graph[u] = []

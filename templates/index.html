@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TREINFO | Journey Logger</title>
+    <title>Treinfo Map</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -1263,9 +1263,9 @@
                 if (seg && !baseType.includes('_' + seg)) {
                     filename += '_' + seg;
                 }
-                return `/ static / img / ${filename}_${assetSide}.png`;
+                return `/static/img/${filename}_${assetSide}.png`;
             } else {
-                return `/ static / img / ${baseType}${sType}_${assetSide}.png`;
+                return `/static/img/${baseType}${sType}_${assetSide}.png`;
             }
         }
 
@@ -1296,7 +1296,7 @@
             };
             localStorage.setItem('treinfo_search_state', JSON.stringify(state));
 
-            fetch(`/ api / set_lang ? lang = ${lang} `)
+            fetch(`/api/set_lang?lang=${lang}`)
                 .then(() => location.reload());
         }
 
@@ -1361,7 +1361,7 @@
         }
 
         async function setLanguage(lang) {
-            const res = await fetch(`/ api / set_lang ? lang = ${lang}`);
+            const res = await fetch(`/api/set_lang?lang=${lang}`);
             const data = await res.json();
             if (data.success) {
                 location.reload();
